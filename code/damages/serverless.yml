@@ -1,0 +1,296 @@
+service: step-functions-demo-damages
+
+provider:
+  name: aws
+  runtime: nodejs18.x
+  architecture: arm64
+  stage: ${opt:stage, 'prod'}
+  region:  ${opt:region, 'eu-north-1'}
+  memorySize: ${opt:memory, 1024}
+  timeout: ${opt:timeout, 10}
+  logRetentionInDays: ${opt:logRetentionInDays, 7}
+  versionFunctions: false
+  deploymentBucket:
+    blockPublicAccess: true
+    maxPreviousDeploymentArtifacts: 5
+    serverSideEncryption: AES256
+  stackTags:
+    Usage: ${self:service}
+  tags:
+    Usage: ${self:service}
+  apiGateway:
+    minimumCompressionSize: 1024
+
+plugins:
+  - serverless-esbuild
+  - serverless-offline
+  - serverless-step-functions
+  - serverless-iam-roles-per-function
+
+package:
+  individually: true
+
+custom:
+  config:
+    awsAccountNumber: ${opt:awsAccountNumber, '123412341234'}
+    eventsTableName: DamagesEventsTable
+    tableName: DamagesTable
+    moodEndpoint: https://www.mockachino.com/ec00d654-807b-42/mood
+    riskEndpoint: https://www.mockachino.com/ec00d654-807b-42/risk
+    taxEndpoint: https://www.mockachino.com/ec00d654-807b-42/tax
+  aws:
+    eventBusArn: arn:aws:events:${self:provider.region}:${self:custom.config.awsAccountNumber}:event-bus/default
+  esbuild:
+    bundle: true
+    minify: true
+
+functions:
+  ValidateInput:
+    handler: src/ValidateInput.handler
+    description: Validates input
+  CalculateDamages:
+    handler: src/CalculateDamages.handler
+    description: Calculates new damage costs
+  GetEmperorMood:
+    handler: src/GetEmperorMood.handler
+    description: Get emperor's mood from external API
+    environment:
+      ENDPOINT: ${self:custom.config.moodEndpoint}
+  GetRiskScore:
+    handler: src/GetRiskScore.handler
+    description: Get risk score from external API
+    environment:
+      ENDPOINT: ${self:custom.config.riskEndpoint}
+  GetTaxLevel:
+    handler: src/GetTaxLevel.handler
+    description: Get tax level from external API
+    environment:
+      ENDPOINT: ${self:custom.config.taxEndpoint}
+
+stepFunctions:
+  validate: true
+  stateMachines:
+    Demo:
+      type: EXPRESS
+      loggingConfig:
+        level: ERROR
+        includeExecutionData: true
+        destinations:
+          - Fn::GetAtt: [StateMachineLogs, Arn]
+      events:
+        - http:
+            method: POST
+            path: /start
+            cors: true
+      name: StateMachineDemo
+      definition:
+        Comment: Some comment here.
+        StartAt: ValidateInput
+        States:
+          ValidateInput:
+            Type: Task
+            Resource: >-
+              arn:aws:lambda:${aws:region}:${self:custom.config.awsAccountNumber}:function:${self:service}-${self:provider.stage}-ValidateInput
+            Next: Parallel
+          Parallel:
+            Type: Parallel
+            Branches:
+              - StartAt: PassNewDamages
+                States:
+                  PassNewDamages:
+                    Type: Pass
+                    OutputPath: "$"
+                    End: true
+              - StartAt: GetCurrentDamages
+                States:
+                  GetCurrentDamages:
+                    Type: Task
+                    Resource: arn:aws:states:::dynamodb:getItem
+                    Parameters:
+                      TableName: ${self:custom.config.tableName}
+                      Key:
+                        pk:
+                          "S.$": "$.name"
+                    # This works perfectly if there are records - but will lead to an uncatchable failure if no record exists yet
+                    #ResultSelector:
+                    #  damages.$: "$.Item.damages.S"
+                    End: true
+              - StartAt: GetRiskScore
+                States:
+                  GetRiskScore:
+                    Type: Task
+                    Resource: >-
+                      arn:aws:lambda:${aws:region}:${self:custom.config.awsAccountNumber}:function:${self:service}-${self:provider.stage}-GetRiskScore
+                    Retry:
+                      - ErrorEquals:
+                          - Lambda.ServiceException
+                          - Lambda.AWSLambdaException
+                          - Lambda.SdkClientException
+                          - Lambda.TooManyRequestsException
+                        IntervalSeconds: 2
+                        MaxAttempts: 6
+                        BackoffRate: 2
+                    End: true
+              - StartAt: GetTaxLevel
+                States:
+                  GetTaxLevel:
+                    Type: Task
+                    Resource: >-
+                      arn:aws:lambda:${aws:region}:${self:custom.config.awsAccountNumber}:function:${self:service}-${self:provider.stage}-GetTaxLevel
+                    Retry:
+                      - ErrorEquals:
+                          - Lambda.ServiceException
+                          - Lambda.AWSLambdaException
+                          - Lambda.SdkClientException
+                          - Lambda.TooManyRequestsException
+                        IntervalSeconds: 2
+                        MaxAttempts: 6
+                        BackoffRate: 2
+                    End: true
+              - StartAt: GetEmperorMood
+                States:
+                  GetEmperorMood:
+                    Type: Task
+                    Resource: >-
+                      arn:aws:lambda:${aws:region}:${self:custom.config.awsAccountNumber}:function:${self:service}-${self:provider.stage}-GetEmperorMood
+                    Retry:
+                      - ErrorEquals:
+                          - Lambda.ServiceException
+                          - Lambda.AWSLambdaException
+                          - Lambda.SdkClientException
+                          - Lambda.TooManyRequestsException
+                        IntervalSeconds: 2
+                        MaxAttempts: 6
+                        BackoffRate: 2
+                    End: true
+            Next: CalculateDamages
+          CalculateDamages:
+            Type: Task
+            Resource: >-
+              arn:aws:lambda:${aws:region}:${self:custom.config.awsAccountNumber}:function:${self:service}-${self:provider.stage}-CalculateDamages
+            Next: UpdateDamages
+          UpdateDamages:
+            Type: Task
+            Resource: arn:aws:states:::dynamodb:putItem
+            Parameters:
+              TableName: ${self:custom.config.tableName}
+              Item:
+                pk:
+                  "S.$": "$.name"
+                damages:
+                  "S.$": "$.damages"
+            ResultPath: "$.DynamoDB"
+            OutputPath: "$"
+            Next: UpdateDamageEvents
+          UpdateDamageEvents:
+            Type: Task
+            Resource: arn:aws:states:::dynamodb:putItem
+            Parameters:
+              TableName: ${self:custom.config.eventsTableName}
+              Item:
+                pk:
+                  "S.$": "$.name"
+                sk:
+                  "S.$": "$$.State.EnteredTime"
+                damages:
+                  "S.$": "$.damages"
+            End: true
+
+resources:
+  Resources:
+    # CloudWatch
+    # Required as we have no other way to automatically create the log group
+    StateMachineLogs:
+      Type: AWS::Logs::LogGroup
+      Properties:
+        LogGroupName: /aws/lambda/${self:service}-${self:provider.stage}-StateMachineLogs
+        RetentionInDays: 7
+
+    # DynamoDB
+    DamagesTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:custom.config.tableName}
+        AttributeDefinitions:
+          - AttributeName: pk
+            AttributeType: S
+        KeySchema:
+          - AttributeName: pk
+            KeyType: HASH
+        BillingMode: PAY_PER_REQUEST
+        PointInTimeRecoverySpecification:
+          PointInTimeRecoveryEnabled: true
+
+    EventsTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:custom.config.eventsTableName}
+        AttributeDefinitions:
+          - AttributeName: pk
+            AttributeType: S
+          - AttributeName: sk
+            AttributeType: S
+        KeySchema:
+          - AttributeName: pk
+            KeyType: HASH
+          - AttributeName: sk
+            KeyType: RANGE
+        StreamSpecification:
+          StreamViewType: NEW_IMAGE
+        BillingMode: PAY_PER_REQUEST
+        PointInTimeRecoverySpecification:
+          PointInTimeRecoveryEnabled: true
+
+    # EventBridge Pipes
+    PipeRole:
+      Type: AWS::IAM::Role
+      Properties:
+        AssumeRolePolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+            - Effect: Allow
+              Principal:
+                Service:
+                  - pipes.amazonaws.com
+              Action:
+                - sts:AssumeRole
+        Policies:
+          - PolicyName: !Sub ${AWS::StackName}-source-policy
+            PolicyDocument:
+              Version: "2012-10-17"
+              Statement:
+                - Effect: Allow
+                  Action:
+                    - "dynamodb:DescribeStream"
+                    - "dynamodb:GetRecords"
+                    - "dynamodb:GetShardIterator"
+                    - "dynamodb:ListStreams"
+                  Resource: !GetAtt EventsTable.StreamArn
+          - PolicyName: !Sub ${AWS::StackName}-target-policy
+            PolicyDocument:
+              Version: "2012-10-17"
+              Statement:
+                - Effect: Allow
+                  Action:
+                    - "events:PutEvents"
+                  Resource: ${self:custom.aws.eventBusArn}
+
+    DamagesUpdatedPipe:
+      Type: AWS::Pipes::Pipe
+      Properties:
+        Name: !Sub ${AWS::StackName}-added
+        Description: "Pipes to connect to DDB stream listening only for insert changes"
+        RoleArn: !GetAtt PipeRole.Arn
+        Source: !GetAtt EventsTable.StreamArn
+        SourceParameters:
+          FilterCriteria:
+            Filters:
+              - Pattern: '{ "eventName": ["INSERT"] }'
+          DynamoDBStreamParameters:
+            StartingPosition: LATEST
+            BatchSize: 1
+        Target: ${self:custom.aws.eventBusArn}
+        TargetParameters:
+          EventBridgeEventBusParameters:
+            DetailType: "DamagesUpdated"
+            Source: "StepFunctionsDemo.Damages"

@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+  <head>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Rebel Scum bounty board</title>
+    <style>
+      body {
+        font-family: system-ui, sans-serif;
+        background-color: black;
+        color: #FFE81F;
+        padding: 2rem;
+      }
+
+      h1 {
+        text-align: center;
+        margin-bottom: 2rem;
+      }
+
+      #characters {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: space-around;
+      }
+
+      .card {
+        max-width: 500px;
+        flex: 0 1 calc(33% - 1em);
+        text-align: center;
+      }
+
+      .card p:first-of-type {
+        font-weight: 800;
+      }
+
+      .card img {
+        max-width: 100%;
+        border-radius: 1rem;
+      }
+
+      @media all and (max-width: 700px) {
+        .card {
+          flex-basis: 48%;
+        }
+      }
+
+      @media all and (max-width: 500px) {
+        .card {
+          flex-basis: 98%;
+        }
+      }
+    </style>
+  </head>
+
+  <body>
+    <h1>Rebel Scum bounty board</h1>
+    <div id="characters"><div id="loading">Loading...</div></div>
+
+    <script>
+      function getImage(name) {
+        if (name === 'Chewbacca') return 'chewbacca';
+        if (name === 'Han Solo') return 'han';
+        if (name === 'Lando Calrissian') return 'lando';
+        if (name === 'Leia Organa') return 'leia';
+        if (name === 'Luke Skywalker') return 'luke';
+        else return 'unknown';
+      }
+
+      function render(data) {
+        const renderArea = document.querySelector("#characters");
+
+        data.forEach((character) => {
+          const name = character.name || 'Unknown';
+          const image = getImage(name);
+          const bounty = character.bounty || '?';
+          renderArea.innerHTML += `<div class="card"><img src="images/${image}.jpg" /><p>${name}</p><p>${bounty} credits</p></div>`;
+        });
+      }
+
+      (async () => {
+        const url = 'https://x6my7taw5f.execute-api.eu-north-1.amazonaws.com/bounties'; // https://x6my7taw5f.execute-api.eu-north-1.amazonaws.com/bounties
+        const data = await fetch(url).then(res => res.json());
+
+        const loading = document.querySelector("#loading");
+        loading.remove();
+
+        render(data);
+      })();
+    </script>
+  </body>
+</html>

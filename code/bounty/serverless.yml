@@ -1,0 +1,101 @@
+service: step-functions-demo-bounty
+
+provider:
+  name: aws
+  runtime: nodejs18.x
+  architecture: arm64
+  stage: ${opt:stage, 'prod'}
+  region:  ${opt:region, 'eu-north-1'}
+  memorySize: ${opt:memory, 1024}
+  timeout: ${opt:timeout, 10}
+  logRetentionInDays: ${opt:logRetentionInDays, 7}
+  versionFunctions: false
+  deploymentBucket:
+    blockPublicAccess: true
+    maxPreviousDeploymentArtifacts: 5
+    serverSideEncryption: AES256
+  stackTags:
+    Usage: ${self:service}
+  tags:
+    Usage: ${self:service}
+  apiGateway:
+    minimumCompressionSize: 1024
+  httpApi:
+    cors: true
+
+plugins:
+  - serverless-esbuild
+  - serverless-offline
+  - serverless-iam-roles-per-function
+
+package:
+  individually: true
+
+custom:
+  config:
+    awsAccountNumber: ${opt:awsAccountNumber, '123412341234'}
+    tableName: BountiesTable
+  aws:
+    tableArn: arn:aws:dynamodb:${self:provider.region}:${self:custom.config.awsAccountNumber}:table/${self:custom.config.tableName}
+  esbuild:
+    bundle: true
+    minify: true
+
+functions:
+  AddBounty:
+    handler: src/AddBounty.handler
+    description: Respond to a bounty being updated
+    events:
+      - eventBridge:
+          pattern:
+            source:
+              - StepFunctionsDemo.Damages
+            detail-type:
+              - DamagesUpdated
+          inputTransformer:
+            inputPathsMap:
+              name: "$.detail.dynamodb.NewImage.pk.S"
+              damages: "$.detail.dynamodb.NewImage.damages.S"
+            inputTemplate: '{"name": <name>,"damages": <damages>}'
+    iamRoleStatements:
+      - Effect: "Allow"
+        Action:
+          - dynamodb:PutItem
+        Resource: ${self:custom.aws.tableArn}
+    environment:
+      REGION: ${aws:region}
+      TABLE_NAME: ${self:custom.config.tableName}
+  GetBounties:
+    handler: src/GetBounties.handler
+    description: Get bounties
+    events:
+      - httpApi:
+          method: GET
+          path: /bounties
+    iamRoleStatements:
+      - Effect: "Allow"
+        Action:
+          - dynamodb:Query
+        Resource: ${self:custom.aws.tableArn}
+    environment:
+      REGION: ${aws:region}
+      TABLE_NAME: ${self:custom.config.tableName}
+
+resources:
+  Resources:
+    # DynamoDB
+    BountiesTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:custom.config.tableName}
+        AttributeDefinitions:
+          - AttributeName: pk
+            AttributeType: S
+          - AttributeName: sk
+            AttributeType: S
+        KeySchema:
+          - AttributeName: pk
+            KeyType: HASH
+          - AttributeName: sk
+            KeyType: RANGE
+        BillingMode: PAY_PER_REQUEST
