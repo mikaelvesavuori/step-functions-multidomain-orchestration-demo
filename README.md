@@ -1,6 +1,6 @@
 # Step Functions Multi-domain Orchestration Demo
 
-The project demonstrates an architecture for orchestrating multiple domains with a serverless Step Functions workflow.
+This project demonstrates an architecture for orchestrating multiple domains with a serverless Step Functions workflow.
 
 It demonstrates:
 
